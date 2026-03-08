@@ -8,8 +8,6 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from ultralytics import YOLO
 
-from gpiozero import AngularServo
-from gpiozero.pins.lgpio import LGPIOFactory
 from RPLCD.i2c import CharLCD
 
 
@@ -21,6 +19,9 @@ CROP_IMAGE_PATH = "/home/mym/Desktop/hackai/deploy/orange_640.jpg"
 DETECT_MODEL_PATH = "/home/mym/Desktop/hackai/deploy/efficientdet_lite0.tflite"
 CLASSIFY_MODEL_PATH = "/home/mym/Desktop/hackai/deploy/best.pt"
 
+# External servo program
+SERVO_PROGRAM_PATH = "/home/mym/Desktop/hackai/deploy/ServoLCD"
+
 # =========================================================
 # Settings
 # =========================================================
@@ -31,17 +32,6 @@ CLASSIFY_IMGSZ = 224
 LCD_I2C_ADDR = 0x27
 LCD_COLS = 16
 LCD_ROWS = 2
-
-# Servo
-SERVO_BCM_PIN = 18
-SERVO_HOME_ANGLE = 40
-SERVO_PUSH_ANGLE = 130
-SERVO_HOLD_TIME = 0.5
-SERVO_RETURN_TIME = 0.7
-
-# Safer pulse range for less jitter
-SERVO_MIN_PULSE = 0.0005
-SERVO_MAX_PULSE = 0.0025
 
 # Loop timing
 LOOP_DELAY = 1.0
@@ -95,30 +85,20 @@ def update_counter_display(lcd, status="READY"):
 
 
 # =========================================================
-# Servo functions
+# External ServoLCD runner
 # =========================================================
-def init_servo():
-    factory = LGPIOFactory()
-    servo = AngularServo(
-        SERVO_BCM_PIN,
-        min_angle=0,
-        max_angle=180,
-        initial_angle=SERVO_HOME_ANGLE,
-        min_pulse_width=SERVO_MIN_PULSE,
-        max_pulse_width=SERVO_MAX_PULSE,
-        pin_factory=factory,
-    )
-    servo.detach()  
-    time.sleep(0.5)
-    return servo
+def run_servo_program_once():
+    servo_path = Path(SERVO_PROGRAM_PATH)
 
+    if not servo_path.exists():
+        raise FileNotFoundError(f"Servo program not found: {SERVO_PROGRAM_PATH}")
 
-def sweep_once_and_return(servo):
-    servo.angle = SERVO_PUSH_ANGLE
-    time.sleep(SERVO_HOLD_TIME)
-    servo.angle = SERVO_HOME_ANGLE
-    time.sleep(SERVO_RETURN_TIME)
-    servo.detach() 
+    if not servo_path.is_file():
+        raise RuntimeError(f"Servo path is not a file: {SERVO_PROGRAM_PATH}")
+
+    print(f"Running servo program: {SERVO_PROGRAM_PATH}")
+    subprocess.run([str(servo_path)], check=True, timeout=4)
+    print("Servo program completed.")
 
 
 # =========================================================
@@ -262,8 +242,10 @@ def main():
     if not Path(CLASSIFY_MODEL_PATH).exists():
         raise FileNotFoundError(f"Missing classifier model: {CLASSIFY_MODEL_PATH}")
 
+    if not Path(SERVO_PROGRAM_PATH).exists():
+        raise FileNotFoundError(f"Missing servo program: {SERVO_PROGRAM_PATH}")
+
     lcd = init_lcd()
-    servo = init_servo()
     detector = init_detector()
     classifier = init_classifier()
 
@@ -290,13 +272,7 @@ def main():
                 if is_bad_label(label):
                     bad_count += 1
                     update_counter_display(lcd, f"BAD {conf:.2f}")
-
-                    # Re‑attach and sweep
-                    servo.angle = SERVO_PUSH_ANGLE    # attaches and moves to push
-                    time.sleep(SERVO_HOLD_TIME)
-                    servo.angle = SERVO_HOME_ANGLE    # moves back home
-                    time.sleep(SERVO_RETURN_TIME)
-                    servo.detach()                     # detach again to avoid jitter
+                    run_servo_program_once()
 
                 elif is_good_label(label):
                     good_count += 1
@@ -304,7 +280,7 @@ def main():
 
                 else:
                     update_counter_display(lcd, label[:16])
-                    print(f"Unknown label '{label}', no servo action.")
+                    print(f"Unknown label '{label}', no action taken.")
 
                 time.sleep(LOOP_DELAY)
 
@@ -322,11 +298,6 @@ def main():
         print("Stopped by user.")
 
     finally:
-        try:
-            servo.angle = SERVO_HOME_ANGLE
-        except Exception:
-            pass
-
         try:
             lcd_write_2lines(lcd, "Program stopped", f"G:{good_count} B:{bad_count}")
         except Exception:
